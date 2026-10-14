@@ -1,0 +1,72 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createClient,type SupabaseClient } from "@supabase/supabase-js";
+import sharp from "sharp";
+import type { Note } from "../../src/lib/types.ts";
+const enabled=process.env.RUN_SUPABASE_TESTS==="1";
+test("Supabase isolates three users, enforces permissions, protects images and filters vector search",{skip:!enabled,timeout:120000},async()=>{
+  const url=process.env.NEXT_PUBLIC_SUPABASE_URL,key=process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,service=process.env.SUPABASE_SECRET_KEY;
+  assert.ok(url&&key&&service,"Postavite Supabase varijable u .env.local.");
+  const admin=createClient(url,service,{auth:{persistSession:false,autoRefreshToken:false}});
+  const people:{id:string;email:string;client:SupabaseClient}[]=[];
+  const paths:string[]=[];
+  try {
+    for(let i=0;i<3;i++){
+      const email=`smartnotes-test-${randomUUID()}@example.com`,password=`Test-${randomUUID()}!`;
+      const {data,error}=await admin.auth.admin.createUser({email,password,email_confirm:true});
+      assert.equal(error,null);assert.ok(data.user);
+      const client:SupabaseClient=createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}});
+      const login=await client.auth.signInWithPassword({email,password});assert.equal(login.error,null);
+      people.push({id:data.user.id,email,client});
+    }
+    const [owner,reader,stranger]=people;
+    const {data:note,error}=await owner.client.from("notes").insert({owner_id:owner.id,title:"Privatne ideje"}).select().single();
+    assert.equal(error,null);assert.ok(note);
+    assert.deepEqual((await reader.client.from("notes").select("id").eq("id",note.id)).data,[]);
+    const forged=await reader.client.from("notes").insert({owner_id:owner.id,title:"Krivotvoreno"});assert.ok(forged.error);
+    const quotaBypass=await reader.client.rpc("consume_ai_quota",{p_user:reader.id,p_operation:"search",p_limit:100});assert.ok(quotaBypass.error);
+    assert.equal((await owner.client.rpc("share_note",{p_note:note.id,p_email:reader.email,p_permission:"read"})).error,null);
+    assert.equal((await reader.client.from("notes").select("id").eq("id",note.id)).data?.length,1);
+    const content={blocks:[{id:"p",type:"paragraph",runs:[{text:"Šalica iz ateljea i tečaj vrtlarenja."}]}]};
+    const readSave=await reader.client.rpc("save_note",{p_id:note.id,p_title:"Pokušaj",p_content:content,p_plain_text:"tekst",p_version:1});
+    assert.equal(readSave.error?.code,"42501");
+    assert.ok((await reader.client.rpc("share_note",{p_note:note.id,p_email:stranger.email,p_permission:"edit"})).error);
+    assert.ok((await reader.client.from("notes").update({owner_id:reader.id}).eq("id",note.id)).error);
+    const deniedDelete=await reader.client.from("notes").delete().eq("id",note.id).select("id");assert.deepEqual(deniedDelete.data,[]);
+    assert.equal((await owner.client.rpc("share_note",{p_note:note.id,p_email:reader.email,p_permission:"edit"})).error,null);
+    const saved=await reader.client.rpc("save_note",{p_id:note.id,p_title:"Zajednička ideja",p_content:content,p_plain_text:"Šalica iz ateljea i tečaj vrtlarenja.",p_version:1}).single<Note>();
+    assert.equal(saved.error,null);assert.ok(saved.data);assert.equal(saved.data.id,note.id);assert.equal(saved.data.version,2);
+    const conflict=await owner.client.rpc("save_note",{p_id:note.id,p_title:"Stara verzija",p_content:content,p_plain_text:"tekst",p_version:1});assert.equal(conflict.error?.code,"40001");
+    const imageId=randomUUID(),path=`${note.id}/${imageId}.webp`;paths.push(path);
+    const image=await sharp({create:{width:16,height:16,channels:3,background:"#aabbee"}}).webp().toBuffer();
+    assert.equal((await owner.client.storage.from("note-images").upload(path,image,{contentType:"image/webp"})).error,null);
+    assert.equal((await owner.client.rpc("register_note_image",{p_note:note.id,p_id:imageId,p_checksum:"integration"})).error,null);
+    assert.equal((await reader.client.storage.from("note-images").download(path)).error,null);
+    assert.ok((await stranger.client.storage.from("note-images").download(path)).error);
+    assert.deepEqual((await stranger.client.from("note_images").select("id").eq("note_id",note.id)).data,[]);
+    const foreignContent={blocks:[{id:"x",type:"image",imageId:randomUUID(),runs:[]}]};
+    assert.equal((await owner.client.rpc("save_note",{p_id:note.id,p_title:"Nevaljana slika",p_content:foreignContent,p_plain_text:"",p_version:2})).error?.code,"22023");
+    const vector=[1,...Array(1535).fill(0)];
+    assert.equal((await admin.from("note_chunks").insert({note_id:note.id,version:2,source:"text",content:"šalica",embedding:JSON.stringify(vector)})).error,null);
+    assert.equal((await admin.from("notes").update({index_status:"ready",indexed_version:2}).eq("id",note.id)).error,null);
+    const accessible=await reader.client.rpc("search_notes",{p_embedding:JSON.stringify(vector),p_query:"šalica"});assert.equal(accessible.error,null);assert.equal(accessible.data.length,1);
+    const privateSearch=await stranger.client.rpc("search_notes",{p_embedding:JSON.stringify(vector),p_query:"šalica"});assert.equal(privateSearch.error,null);assert.deepEqual(privateSearch.data,[]);
+    assert.equal((await owner.client.rpc("unshare_note",{p_note:note.id,p_user:reader.id})).error,null);
+    assert.deepEqual((await reader.client.rpc("search_notes",{p_embedding:JSON.stringify(vector),p_query:"šalica"})).data,[]);
+    assert.ok((await reader.client.storage.from("note-images").download(path)).error);
+    assert.deepEqual((await reader.client.from("notes").select("id").eq("id",note.id)).data,[]);
+    const deniedRemoval=await reader.client.rpc("remove_note_image",{p_note:note.id,p_id:imageId,p_version:2}).single();
+    assert.equal(deniedRemoval.error?.code,"42501");
+    const imageContent={blocks:[...content.blocks,{id:"image",type:"image",imageId,runs:[]}]};
+    const withImage=await owner.client.rpc("save_note",{p_id:note.id,p_title:"Slika u bilješci",p_content:imageContent,p_plain_text:"Šalica",p_version:2}).single<Note>();
+    assert.equal(withImage.error,null);assert.ok(withImage.data);assert.equal(withImage.data.version,3);
+    const removed=await owner.client.rpc("remove_note_image",{p_note:note.id,p_id:imageId,p_version:3}).single<Note>();
+    assert.equal(removed.error,null);assert.ok(removed.data);assert.equal(removed.data.id,note.id);assert.equal(removed.data.version,4);
+    assert.deepEqual(removed.data.content,content);
+    assert.deepEqual((await owner.client.from("note_images").select("id").eq("id",imageId)).data,[]);
+  } finally {
+    if(paths.length)await admin.storage.from("note-images").remove(paths);
+    for(const person of people)await admin.auth.admin.deleteUser(person.id);
+  }
+});

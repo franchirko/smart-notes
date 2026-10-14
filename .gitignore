@@ -1,0 +1,15 @@
+node_modules/
+docs/
+.next/
+.next-test/
+.env*
+!.env.example
+.vercel/
+.local/
+.npm-cache/
+.npm-logs/
+test-results/
+playwright-report/
+*.tsbuildinfo
+coverage/
+next-env.d.ts
