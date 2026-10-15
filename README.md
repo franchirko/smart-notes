@@ -104,3 +104,9 @@ Cache, buildovi i izvještaji (`.npm-cache/`, `.npm-logs/`, `.local/`, `.next/`,
 - Provjera pristupa vrijedi za buduće zahtjeve; već preuzete kopije sadržaja nije moguće povući.
 
 Službena dokumentacija: [Next.js](https://nextjs.org/docs/app), [Supabase SSR Auth](https://supabase.com/docs/guides/auth/server-side), [RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [OpenAI embeddings](https://developers.openai.com/api/docs/guides/embeddings), [OpenAI vision](https://developers.openai.com/api/docs/guides/images-vision), [Vercel](https://vercel.com/docs).
+
+### Editor bilježaka
+
+Bilješke se uređuju u jedinstvenom Tiptap 3.32.0 dokumentu, s alatima za naslov, podebljanje, kurziv, jednostavan popis, citat, slike te poništi/ponovi. Enter stvara odlomak ili nastavlja popis, prazan red izlazi iz popisa, a Shift+Enter dodaje prijelom retka. Lijepljenje prihvaća običan tekst. Prekoračenje postojećih ograničenja odbija cijelu izmjenu uz poruku.
+
+Adapter čuva postojeći NoteContent JSON, identifikatore blokova i opise slika bez migracije baze. Slika se umeće na zapamćeno mjesto kursora. Brisanje slike tipkovnicom ostavlja je među dostupnim privicima; radnja „Trajno obriši sliku” briše je na serveru i resetira povijest poništavanja. Spremanje ostaje ručno, uz provjeru verzije i upozorenje za nespremljene promjene. Čitatelji vide isti dokument bez alata; vlasnik upravlja dijeljenjem i brisanjem. AI status i ponovni pokušaj obrade prikazani su ispod dokumenta.

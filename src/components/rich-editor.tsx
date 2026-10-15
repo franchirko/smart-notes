@@ -1,46 +1,139 @@
-"use client";
-/* Native rich text editor. Persisted JSON contains text/marks, never arbitrary HTML. */
-import { useEffect,useRef } from "react";
-import { Bold,Italic,Plus,Trash2,GripVertical } from "lucide-react";
-import type { Block,NoteContent,Run } from "@/lib/types";
-import { runsToHtml } from "@/lib/content";
-const styles={paragraph:"Tekst",heading:"Naslov",bullet:"Stavka popisa",quote:"Citat",image:"Slika"};
-function domToRuns(element:HTMLElement):Run[] {
-  const runs:Run[]=[];
-  function visit(node:Node,bold=false,italic=false) {
-    if(node.nodeType===Node.TEXT_NODE){runs.push({text:node.textContent||"",...(bold?{bold:true}:{}),...(italic?{italic:true}:{})});return;}
-    if(!(node instanceof HTMLElement))return;
-    const tag=node.tagName.toLowerCase();
-    if(["script","style","iframe","svg","img"].includes(tag))return;
-    if(tag==="br"){runs.push({text:"\n"});return;}
-    const b=bold||tag==="b"||tag==="strong"||node.style.fontWeight==="bold"||Number(node.style.fontWeight)>=600;
-    const i=italic||tag==="i"||tag==="em"||node.style.fontStyle==="italic";
-    node.childNodes.forEach(child=>visit(child,b,i));
-    if(tag==="div"&&node!==element)runs.push({text:"\n"});
+﻿"use client";
+import { useEffect, useRef, useState, useImperativeHandle, type Ref } from "react";
+import { Extension, Node, mergeAttributes, type Editor } from "@tiptap/core";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import { Plugin, TextSelection } from "@tiptap/pm/state";
+import { Slice, Fragment } from "@tiptap/pm/model";
+import { Bold, Italic, List, Quote, ImagePlus, Undo2, Redo2 } from "lucide-react";
+import type { NoteContent, Run } from "@/lib/types";
+import { toEditor, fromEditor } from "@/lib/editor-adapter";
+import { contentSchema } from "@/lib/validation";
+
+const NoteImage = Node.create({
+  name: "noteImage", group: "block", atom: true, draggable: false,
+  addAttributes: () => ({ blockId: { default: null }, imageId: { default: null }, runs: { default: [] } }),
+  parseHTML: () => [],
+  renderHTML({ node, HTMLAttributes }) {
+    const caption = (node.attrs.runs as Run[]).map(r => r.text).join("");
+    return ["figure", mergeAttributes(HTMLAttributes, { class: "document-image", contenteditable: "false" }),
+      ["img", { src: `/api/slike/${node.attrs.imageId}`, alt: caption || "Slika u bilješci" }], ["figcaption", {}, caption]];
+  },
+});
+export type EditorHandle = { rememberSelection: () => void; insertImage: (id: string, caption?: string) => boolean };
+export function RichEditor({ value, onChange, editable, disabled = false, onAddImage, canAddImage = true, historyKey = 0, editorRef }: {
+  value: NoteContent; onChange: (value: NoteContent) => void; editable: boolean; disabled?: boolean;
+  onAddImage: () => void; canAddImage?: boolean; historyKey?: number; editorRef?: Ref<EditorHandle>;
+}) {
+  const [error, setError] = useState("");
+  const [, redraw] = useState(0);
+  const savedSelection = useRef<{ from: number; to: number } | null>(null);
+  const current = useRef({ value, onChange });
+  useEffect(() => { current.current = { value, onChange }; }, [value, onChange]);
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: [StarterKit.configure({ heading: { levels: [2] }, code: false, codeBlock: false, horizontalRule: false,
+      orderedList: false, strike: false, underline: false, link: false, trailingNode: false }), NoteImage,
+      Extension.create({
+        name: "persistedBlocks",
+        addGlobalAttributes: () => [{ types: ["paragraph", "heading"], attributes: {
+          blockId: { default: null, rendered: false }, originalRuns: { default: null, rendered: false },
+        } }],
+        addKeyboardShortcuts() { return { Tab: () => true, "Shift-Tab": () => true }; },
+        addProseMirrorPlugins() { return [new Plugin({
+          filterTransaction(tr) {
+            if (!tr.docChanged) return true;
+            let supported = true;
+            tr.doc.descendants(node => {
+              if (node.type.name === "listItem" && (node.childCount !== 1 || node.firstChild?.type.name !== "paragraph")) supported = false;
+              if (node.type.name === "blockquote") node.forEach(child => { if (child.type.name !== "paragraph") supported = false; });
+            });
+            if (!supported) { setError("U popisu i citatu podržan je samo jednostavan tekst."); return false; }
+            const valid = contentSchema.safeParse(fromEditor(tr.doc.toJSON())).success;
+            if (!valid) setError("Izmjena nije prihvaćena: najviše 100 odlomaka, 300 tekstnih oznaka po odlomku i 100.000 znakova ukupno.");
+            else setError("");
+            return valid;
+          },
+          appendTransaction(transactions, _old, state) {
+            if (!transactions.some(t => t.docChanged)) return null;
+            const ids = new Set<string>();
+            const tr = state.tr;
+            state.doc.descendants((node, pos) => {
+              if (!["paragraph", "heading", "noteImage"].includes(node.type.name)) return;
+              let id = node.attrs.blockId;
+              if (!id || ids.has(id)) { id = crypto.randomUUID(); tr.setNodeMarkup(pos, undefined, { ...node.attrs, blockId: id }); }
+              ids.add(id);
+            });
+            return tr.docChanged ? tr : null;
+          },
+        })]; },
+      })],
+    content: toEditor(value), editable: editable && !disabled,
+    editorProps: {
+      attributes: { role: "textbox", "aria-label": "Sadržaj bilješke", "aria-multiline": "true" },
+      handleDOMEvents: {
+        // Chrome on Android skips Enter key handlers. Handle its native line-break
+        // input so the trailing DOM break cannot become a second hardBreak.
+        beforeinput(view, event) {
+          const input = event as InputEvent;
+          if (input.inputType !== "insertLineBreak" || input.isComposing || !view.editable) return false;
+          event.preventDefault();
+          view.dispatch(view.state.tr.replaceSelectionWith(view.state.schema.nodes.hardBreak.create(), true).scrollIntoView());
+          return true;
+        },
+      },
+      handleDrop: () => true,
+      handlePaste(view, event) {
+        event.preventDefault();
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        const paragraphs = text.replace(/\r\n?/g, "\n").split("\n").map(line => view.state.schema.nodes.paragraph.create(null, line ? view.state.schema.text(line) : undefined));
+        view.dispatch(view.state.tr.replaceSelection(new Slice(Fragment.from(paragraphs), 1, 1)).scrollIntoView());
+        return true;
+      },
+    },
+    onUpdate: ({ editor }) => { current.current.onChange(fromEditor(editor.getJSON())); },
+    onSelectionUpdate: ({ editor }) => { savedSelection.current = { from: editor.state.selection.from, to: editor.state.selection.to }; redraw(n => n + 1); },
+    onTransaction: () => redraw(n => n + 1),
+  }, [historyKey]);
+  useEffect(() => { editor?.setEditable(editable && !disabled, false); }, [editor, editable, disabled]);
+  useEffect(() => {
+    if (editor && JSON.stringify(fromEditor(editor.getJSON())) !== JSON.stringify(value)) {
+      editor.commands.setContent(toEditor(value), { emitUpdate: false });
+    }
+  }, [editor, value]);
+  useImperativeHandle(editorRef, () => ({
+    rememberSelection() { if (editor?.isFocused) savedSelection.current = { from: editor.state.selection.from, to: editor.state.selection.to }; },
+    insertImage(id, caption = "") {
+      if (!editor) return false;
+      const selection = savedSelection.current;
+      const position = selection ? Math.min(selection.from, editor.state.doc.content.size) : editor.state.doc.content.size;
+      return editor.chain().focus().setTextSelection(TextSelection.near(editor.state.doc.resolve(position)).from)
+        .insertContent({ type: "noteImage", attrs: { blockId: crypto.randomUUID(), imageId: id, runs: [{ text: caption }] } }).run();
+    },
+  }), [editor]);
+  function tool(label: string, icon: React.ReactNode, action: (editor: Editor) => void, active = false, unavailable = false) {
+    return <button type="button" className="icon-button" aria-label={label} title={label} aria-pressed={active} disabled={disabled || !editor || unavailable}
+      onMouseDown={e => e.preventDefault()} onClick={() => editor && action(editor)}>{icon}</button>;
   }
-  element.childNodes.forEach(node=>visit(node));
-  return runs.length?runs:[{text:""}];
-}
-function EditableBlock({block,onChange,editable}:{block:Block;onChange:(runs:Run[])=>void;editable:boolean}) {
-  const ref=useRef<HTMLDivElement>(null);
-  const initial=useRef(block.runs);
-  useEffect(()=>{if(ref.current)ref.current.innerHTML=runsToHtml(initial.current);},[]);
-  return <div ref={ref} className={`editor-text editor-${block.type}`} contentEditable={editable} suppressContentEditableWarning
-    role={editable?"textbox":undefined} aria-label={styles[block.type]} aria-multiline={editable||undefined}
-    data-placeholder={block.type==="heading"?"Naslov ideje…":"Zapiši što ti je na pameti…"}
-    onInput={()=>{if(ref.current)onChange(domToRuns(ref.current));}}
-    onPaste={event=>{event.preventDefault();document.execCommand("insertText",false,event.clipboardData.getData("text/plain"));}}
-    onDrop={event=>event.preventDefault()}/>;
-}
-export function RichEditor({value,onChange,editable,onRemoveImage,disabled=false}:{value:NoteContent;onChange:(content:NoteContent)=>void;editable:boolean;onRemoveImage:(id:string)=>void;disabled?:boolean}) {
-  function update(id:string,patch:Partial<Block>){onChange({blocks:value.blocks.map(b=>b.id===id?{...b,...patch}:b)});}
-  function addBlock(){onChange({blocks:[...value.blocks,{id:crypto.randomUUID(),type:"paragraph",runs:[{text:""}]}]});}
-  return <div className="rich-editor">{editable&&<div className="editor-toolbar"><button type="button" className="icon-button" title="Podebljano" aria-label="Podebljaj označeni tekst" onMouseDown={e=>e.preventDefault()} onClick={()=>document.execCommand("bold")}><Bold size={17}/></button><button type="button" className="icon-button" title="Kurziv" aria-label="Kurziv označenog teksta" onMouseDown={e=>e.preventDefault()} onClick={()=>document.execCommand("italic")}><Italic size={17}/></button><span className="toolbar-separator"/><span>Označi tekst za oblikovanje · odaberi vrstu odlomka</span></div>}
-    <div className="editor-blocks">{value.blocks.map(block=><div className={`editor-block ${block.type==="image"?"editor-image-block":""}`} key={block.id}>
-      {block.type==="image"?<figure><div className="note-image-wrapper">{/* Authenticated image proxy deliberately bypasses public Next image caches. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={`/api/slike/${block.imageId}`} alt={block.runs.map(r=>r.text).join("")||"Slika u bilješci"}/></div><figcaption>{block.runs.map(r=>r.text).join("")}</figcaption>{editable&&<button className="image-remove button button-secondary" disabled={disabled} onClick={()=>onRemoveImage(block.imageId!)}><Trash2 size={14}/>Ukloni sliku</button>}</figure>:
-      <><div className="block-controls">{editable?<><GripVertical size={14}/><select aria-label="Vrsta odlomka" value={block.type} disabled={disabled} onChange={e=>update(block.id,{type:e.target.value as Block["type"]})}>{Object.entries(styles).filter(([key])=>key!=="image").map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></>:null}</div><div className="block-main">{block.type==="bullet"&&<span className="bullet-mark">•</span>}<EditableBlock block={block} editable={editable&&!disabled} onChange={runs=>update(block.id,{runs})}/></div>{editable&&<button className="icon-button block-delete" aria-label="Ukloni odlomak" title="Ukloni odlomak" disabled={disabled} onClick={()=>onChange({blocks:value.blocks.filter(b=>b.id!==block.id)})}><Trash2 size={14}/></button>}</>}
-    </div>)}</div>{editable&&<button className="add-block" onClick={addBlock} disabled={disabled||value.blocks.length>=100}><Plus size={16}/>Dodaj odlomak</button>}
+  return <div className="rich-editor">
+    {editable && <div className="editor-toolbar" role="toolbar" aria-label="Oblikovanje teksta">
+      <select aria-label="Vrsta odlomka" disabled={disabled || !editor} value={editor?.isActive("heading") ? "heading" : "paragraph"} onChange={e => {
+        if (!editor) return;
+        const chain = editor.chain().focus();
+        if (editor.isActive("bulletList")) chain.toggleBulletList();
+        if (editor.isActive("blockquote")) chain.toggleBlockquote();
+        if (e.target.value === "heading") chain.setHeading({ level: 2 }).run(); else chain.setParagraph().run();
+      }}><option value="paragraph">Tekst</option><option value="heading">Naslov</option></select>
+      {tool("Podebljaj označeni tekst", <Bold size={18}/>, e => e.chain().focus().toggleBold().run(), editor?.isActive("bold"))}
+      {tool("Kurziv označenog teksta", <Italic size={18}/>, e => e.chain().focus().toggleItalic().run(), editor?.isActive("italic"))}
+      {tool("Popis", <List size={18}/>, e => { const c=e.chain().focus(); if(e.isActive("blockquote"))c.toggleBlockquote(); c.toggleBulletList().run(); }, editor?.isActive("bulletList"))}
+      {tool("Citat", <Quote size={18}/>, e => { const c=e.chain().focus(); if(e.isActive("bulletList"))c.toggleBulletList(); if(e.isActive("heading"))c.setParagraph(); c.toggleBlockquote().run(); }, editor?.isActive("blockquote"))}
+      {tool("Dodaj sliku", <ImagePlus size={18}/>, () => onAddImage(), false, !canAddImage)}
+      <span className="toolbar-separator"/>
+      {tool("Poništi", <Undo2 size={18}/>, e => e.chain().focus().undo().run(), false, !editor?.can().undo())}
+      {tool("Ponovi", <Redo2 size={18}/>, e => e.chain().focus().redo().run(), false, !editor?.can().redo())}
+    </div>}
+    {error && <div className="alert" role="alert">{error}</div>}
+    <EditorContent editor={editor}/>
   </div>;
 }
