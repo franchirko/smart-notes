@@ -1,6 +1,6 @@
 import { apiUser,apiFailure,ApiError } from "@/lib/api";
 import { uuidSchema } from "@/lib/validation";
-export async function GET(request:Request,{params}:{params:Promise<{id:string}>}) {
+export async function GET(_request:Request,{params}:{params:Promise<{id:string}>}) {
   try {
     const {supabase}=await apiUser();
     const {id}=await params;

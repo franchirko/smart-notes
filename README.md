@@ -63,7 +63,7 @@ npm run test:e2e
 
 Testna stranica `/test-fixtures/editor` dostupna je samo uz `NODE_ENV=development` i `ENABLE_TEST_FIXTURES=1`; inače vraća 404.
 
-Unit testovi provjeravaju sigurno prikazivanje teksta, validaciju i Unicode segmentiranje. Playwright provjerava landing, navigaciju, responzivnost, editor, read-only prikaz, dijalog dijeljenja i zabranu neprijavljenih / cross-origin API zahtjeva na desktopu i mobitelu.
+Unit testovi provjeravaju pretvorbu između Tiptap dokumenta i NoteContent formata, izdvajanje teksta, validaciju i Unicode segmentiranje. Playwright provjerava landing, navigaciju, responzivnost, uređivanje odlomaka i popisa, formatiranje, poništi/ponovi, lijepljenje običnog teksta i ograničenja sadržaja, umetanje i uklanjanje slika, read-only prikaz, dijalog dijeljenja i zabranu neprijavljenih / cross-origin API zahtjeva na desktopu i mobitelu.
 
 Playwright koristi port 3001 i zaseban `.next-test` direktorij. Ako već imaš Chromium i instaliranje preglednika nije moguće, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` može pokazivati na njegovu izvršnu datoteku. To služi samo lokalnom testiranju; u CI-u instalira se odgovarajući preglednik.
 
@@ -100,7 +100,6 @@ Cache, buildovi i izvještaji (`.npm-cache/`, `.npm-logs/`, `.local/`, `.next/`,
 - Slike koje su učitane, a nisu umetnute i spremljene, prikazuju se kao dostupni privici pri ponovnom otvaranju. Mrežni prekid tijekom uploada može ostaviti storage objekt bez metapodataka; produkcijsko poboljšanje je periodično čišćenje takvih objekata.
 - Kvote su po korisniku, nisu ukupni novčani limit. Trošak ovisi o broju korisnika i korištenju. Postavi upozorenja/budžet u OpenAI projektu i prati potrošnju; javna registracija ostaje isključena.
 - AI pretraga slika ovisi o generiranom opisu; ne traži izravno po slikovnom embeddingu.
-- Editor je vlastita komponenta s ograničenim JSON modelom. Tiptap/shadcn paketi nisu bili dostupni u mrežno ograničenom okruženju.
 - Provjera pristupa vrijedi za buduće zahtjeve; već preuzete kopije sadržaja nije moguće povući.
 
 Službena dokumentacija: [Next.js](https://nextjs.org/docs/app), [Supabase SSR Auth](https://supabase.com/docs/guides/auth/server-side), [RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [OpenAI embeddings](https://developers.openai.com/api/docs/guides/embeddings), [OpenAI vision](https://developers.openai.com/api/docs/guides/images-vision), [Vercel](https://vercel.com/docs).

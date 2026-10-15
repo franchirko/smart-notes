@@ -1,4 +1,4 @@
-import type { NoteContent, Run } from "./types.ts";
+import type { NoteContent } from "./types.ts";
 
 export const emptyContent = (): NoteContent => ({ blocks: [{ id: "initial", type: "paragraph", runs: [{ text: "" }] }] });
 export function plainText(content: NoteContent) {
@@ -15,17 +15,6 @@ export function splitText(text: string, size = 500, overlap = 64) {
     if (i + size >= chars.length) break;
   }
   return chunks;
-}
-export function escapeHtml(text: string) {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-}
-export function runsToHtml(runs: Run[]) {
-  return runs.map(run => {
-    let html = escapeHtml(run.text).replaceAll("\n", "<br>");
-    if (run.bold) html = `<strong>${html}</strong>`;
-    if (run.italic) html = `<em>${html}</em>`;
-    return html;
-  }).join("");
 }
 export function readableError(code?: string) {
   if (code === "40001") return "Netko je promijenio bilješku. Kopirajte svoje izmjene i ponovno otvorite bilješku.";
